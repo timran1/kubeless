@@ -52,8 +52,11 @@ var updateCmd = &cobra.Command{
 		if err != nil {
 			logrus.Fatal(err)
 		}
+		var nsArg string
 		if ns == "" {
 			ns = utils.GetDefaultNamespace()
+		} else {
+			nsArg = fmt.Sprintf(" -n %s", ns)
 		}
 
 		handler, err := cmd.Flags().GetString("handler")
@@ -67,6 +70,11 @@ var updateCmd = &cobra.Command{
 		}
 
 		secrets, err := cmd.Flags().GetStringSlice("secrets")
+		if err != nil {
+			logrus.Fatal(err)
+		}
+
+		serviceAccount, err := cmd.Flags().GetString("service-account")
 		if err != nil {
 			logrus.Fatal(err)
 		}
@@ -126,11 +134,11 @@ var updateCmd = &cobra.Command{
 		}
 		funcDeps := ""
 		if deps != "" {
-			contentType, err := getContentType(deps)
+			contentType, err := utils.GetContentType(deps)
 			if err != nil {
 				logrus.Fatal(err)
 			}
-			funcDeps, _, err = parseContent(deps, contentType)
+			funcDeps, _, err = utils.ParseContent(deps, contentType)
 			if err != nil {
 				logrus.Fatal(err)
 			}
@@ -164,12 +172,17 @@ var updateCmd = &cobra.Command{
 			logrus.Fatal(err)
 		}
 
+		nodeSelectors, err := cmd.Flags().GetStringSlice("node-selectors")
+		if err != nil {
+			logrus.Fatal(err)
+		}
+
 		previousFunction, err := utils.GetFunction(funcName, ns)
 		if err != nil {
 			logrus.Fatal(err)
 		}
 
-		f, err := getFunctionDescription(funcName, ns, handler, file, funcDeps, runtime, runtimeImage, mem, cpu, timeout, imagePullPolicy, port, servicePort, headless, envs, labels, secrets, previousFunction)
+		f, err := getFunctionDescription(funcName, ns, handler, file, funcDeps, runtime, runtimeImage, mem, cpu, timeout, imagePullPolicy, serviceAccount, port, servicePort, headless, envs, labels, secrets, nodeSelectors, previousFunction)
 		if err != nil {
 			logrus.Fatal(err)
 		}
@@ -205,7 +218,7 @@ var updateCmd = &cobra.Command{
 			logrus.Fatal(err)
 		}
 		logrus.Infof("Function %s submitted for deployment", funcName)
-		logrus.Infof("Check the deployment status executing 'kubeless function ls %s'", funcName)
+		logrus.Infof("Check the deployment status executing 'kubeless function ls %s%s'", funcName, nsArg)
 	},
 }
 
@@ -218,6 +231,8 @@ func init() {
 	updateCmd.Flags().StringSliceP("label", "l", []string{}, "Specify labels of the function")
 	updateCmd.Flags().StringSliceP("secrets", "", []string{}, "Specify Secrets to be mounted to the functions container. For example: --secrets mySecret")
 	updateCmd.Flags().StringSliceP("env", "e", []string{}, "Specify environment variable of the function")
+	updateCmd.Flags().StringSliceP("node-selectors", "", []string{}, "Specify node selectors for the function")
+	updateCmd.Flags().StringP("service-account", "", "", "Specify service account for the function. For example: --service-account controller-acct")
 	updateCmd.Flags().StringP("namespace", "n", "", "Specify namespace for the function")
 	updateCmd.Flags().StringP("dependencies", "d", "", "Specify a file containing list of dependencies for the function")
 	updateCmd.Flags().StringP("runtime-image", "", "", "Custom runtime image")
@@ -228,5 +243,4 @@ func init() {
 	updateCmd.Flags().Int32("servicePort", 0, "Deploy http-based function with a custom service port")
 	updateCmd.Flags().Bool("dryrun", false, "Output JSON manifest of the function without creating it")
 	updateCmd.Flags().StringP("output", "o", "yaml", "Output format")
-
 }

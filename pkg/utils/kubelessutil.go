@@ -18,23 +18,30 @@ package utils
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	monitoringv1alpha1 "github.com/coreos/prometheus-operator/pkg/client/monitoring/v1alpha1"
 	"github.com/ghodss/yaml"
 	kubelessApi "github.com/kubeless/kubeless/pkg/apis/kubeless/v1beta1"
 	"github.com/kubeless/kubeless/pkg/langruntime"
 	"github.com/sirupsen/logrus"
-	"io/ioutil"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
-	"k8s.io/api/core/v1"
-	"k8s.io/api/extensions/v1beta1"
+	v1 "k8s.io/api/core/v1"
 	clientsetAPIExtensions "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +50,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
+
+// secretsMountPath is the file system path where volumes populated with secrets are mounted.
+const secretsMountPath = "/var/run/secrets/kubeless.io"
 
 // GetFunctionPort returns the port for a function service
 func GetFunctionPort(clientset kubernetes.Interface, namespace, functionName string) (string, error) {
@@ -79,7 +89,7 @@ func getProvisionContainer(function, checksum, fileName, handler, contentType, r
 		originFile = decodedFile
 	} else if strings.Contains(contentType, "url") {
 		fromURLFile := "/tmp/func.fromurl"
-		prepareCommand = appendToCommand(prepareCommand, fmt.Sprintf("curl %s -L --silent --output %s", function, fromURLFile))
+		prepareCommand = appendToCommand(prepareCommand, fmt.Sprintf("curl '%s' -L --silent --output %s", function, fromURLFile))
 		originFile = fromURLFile
 	} else if strings.Contains(contentType, "text") || contentType == "" {
 		// Assumming that function is plain text
@@ -106,10 +116,16 @@ func getProvisionContainer(function, checksum, fileName, handler, contentType, r
 		}
 	}
 
-	// Extract content in case it is a Zip file
 	if strings.Contains(contentType, "zip") {
+		// Extract content in case it is a Zip file
 		prepareCommand = appendToCommand(prepareCommand,
 			fmt.Sprintf("unzip -o %s -d %s", originFile, runtimeVolume.MountPath),
+		)
+	} else if strings.Contains(contentType, "compressedtar") {
+		// Extract content in case it is a compressed tar file.
+		// The `tar` command auto-detects the compression type.
+		prepareCommand = appendToCommand(prepareCommand,
+			fmt.Sprintf("tar xf %s -C %s", originFile, runtimeVolume.MountPath),
 		)
 	} else {
 		// Copy the target as a single file
@@ -350,9 +366,6 @@ func populatePodSpec(funcObj *kubelessApi.Function, lr *langruntime.Langruntimes
 		if err != nil {
 			return err
 		}
-		if err != nil {
-			return err
-		}
 		srcVolumeMount := v1.VolumeMount{
 			Name:      depsVolumeName,
 			MountPath: "/src",
@@ -376,7 +389,7 @@ func populatePodSpec(funcObj *kubelessApi.Function, lr *langruntime.Langruntimes
 		result.InitContainers = []v1.Container{provisionContainer}
 	}
 
-	// Add the imagesecrets if present to pull images from private docker registry
+	// add the image secrets if present to pull images from private docker registry
 	if funcObj.Spec.Runtime != "" {
 		imageSecrets, err := lr.GetImageSecrets(funcObj.Spec.Runtime)
 		if err != nil {
@@ -422,13 +435,51 @@ func populatePodSpec(funcObj *kubelessApi.Function, lr *langruntime.Langruntimes
 			*compContainer,
 		)
 	}
+
+	// mount volumes with init container secrets specified in runtime configuration
+	lr.ReadConfigMap()
+	for i := 0; i < len(result.InitContainers); i++ {
+		secrets, err := lr.GetInitContainerSecrets(funcObj.Spec.Runtime, result.InitContainers[i].Name)
+		if err != nil {
+			return fmt.Errorf("Unable to fetch init container secrets for runtime %s at phase %s: %v", funcObj.Spec.Runtime, result.InitContainers[i].Name, err)
+		}
+		for _, secret := range secrets {
+			// add volume if not available in the pod spec already
+			var found bool
+			for _, vol := range result.Volumes {
+				if vol.Name == secret.Name && (vol.Secret == nil || vol.Secret.SecretName != secret.Name) {
+					return fmt.Errorf("Unable to add volume for secret %s, volume already defined %#v", secret.Name, vol)
+				}
+				if vol.Name == secret.Name && vol.Secret != nil && vol.Secret.SecretName == secret.Name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				result.Volumes = append(result.Volumes, v1.Volume{
+					Name: secret.Name,
+					VolumeSource: v1.VolumeSource{
+						Secret: &v1.SecretVolumeSource{SecretName: secret.Name},
+					},
+				})
+			}
+
+			// add volume mount to the init container
+			result.InitContainers[i].VolumeMounts = append(result.InitContainers[i].VolumeMounts, v1.VolumeMount{
+				Name:      secret.Name,
+				ReadOnly:  true,
+				MountPath: filepath.Join(secretsMountPath, secret.Name),
+			})
+		}
+	}
+
 	return nil
 }
 
 // EnsureFuncImage creates a Job to build a function image
 func EnsureFuncImage(client kubernetes.Interface, funcObj *kubelessApi.Function, lr *langruntime.Langruntimes, or []metav1.OwnerReference, imageName, tag, builderImage, registryHost, dockerSecretName, provisionImage string, registryTLSEnabled bool, imagePullSecrets []v1.LocalObjectReference) error {
 	if len(tag) < 64 {
-		return fmt.Errorf("Expecting sha256 as image tag")
+		return errors.New("Expecting sha256 as image tag")
 	}
 	jobName := fmt.Sprintf("build-%s-%s", funcObj.ObjectMeta.Name, tag[0:10])
 	_, err := client.BatchV1().Jobs(funcObj.ObjectMeta.Namespace).Get(jobName, metav1.GetOptions{})
@@ -570,7 +621,7 @@ func EnsureFuncDeployment(client kubernetes.Interface, funcObj *kubelessApi.Func
 	}
 	maxUnavailable := intstr.FromInt(0)
 
-	//add deployment and copy all func's Spec.Deployment to the deployment
+	// add deployment and copy all func's Spec.Deployment to the deployment
 	dpm := funcObj.Spec.Deployment.DeepCopy()
 	dpm.OwnerReferences = or
 	dpm.ObjectMeta.Name = funcObj.ObjectMeta.Name
@@ -578,13 +629,13 @@ func EnsureFuncDeployment(client kubernetes.Interface, funcObj *kubelessApi.Func
 		MatchLabels: funcObj.ObjectMeta.Labels,
 	}
 
-	dpm.Spec.Strategy = v1beta1.DeploymentStrategy{
-		RollingUpdate: &v1beta1.RollingUpdateDeployment{
+	dpm.Spec.Strategy = appsv1.DeploymentStrategy{
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
 			MaxUnavailable: &maxUnavailable,
 		},
 	}
 
-	//append data to dpm deployment
+	// append data to dpm deployment
 	dpm.Labels = addDefaultLabel(mergeMap(dpm.Labels, funcObj.Labels))
 	dpm.Spec.Template.Labels = mergeMap(dpm.Spec.Template.Labels, funcObj.Labels)
 	dpm.Annotations = mergeMap(dpm.Annotations, funcObj.Annotations)
@@ -601,7 +652,7 @@ func EnsureFuncDeployment(client kubernetes.Interface, funcObj *kubelessApi.Func
 		if err != nil {
 			return err
 		}
-		//only resolve the image name and build the function if it has not been built already
+		// only resolve the image name and build the function if it has not been built already
 		if dpm.Spec.Template.Spec.Containers[0].Image == "" && prebuiltRuntimeImage == "" {
 			err := populatePodSpec(funcObj, lr, &dpm.Spec.Template.Spec, runtimeVolumeMount, provisionImage, imagePullSecrets)
 			if err != nil {
@@ -683,12 +734,34 @@ func EnsureFuncDeployment(client kubernetes.Interface, funcObj *kubelessApi.Func
 		}
 	}
 
-	_, err = client.ExtensionsV1beta1().Deployments(funcObj.ObjectMeta.Namespace).Create(dpm)
+	// Add soft pod anti affinity
+	if dpm.Spec.Template.Spec.Affinity == nil {
+		dpm.Spec.Template.Spec.Affinity = &v1.Affinity{
+			PodAntiAffinity: &v1.PodAntiAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: v1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"created-by": "kubeless",
+									"function":   funcObj.ObjectMeta.Name,
+								},
+							},
+							TopologyKey: "kubernetes.io/hostname",
+						},
+					},
+				},
+			},
+		}
+	}
+
+	_, err = client.AppsV1().Deployments(funcObj.ObjectMeta.Namespace).Create(dpm)
 	if err != nil && k8sErrors.IsAlreadyExists(err) {
 		// In case the Deployment already exists we should update
 		// just certain fields (to avoid race conditions)
-		var newDpm *v1beta1.Deployment
-		newDpm, err = client.ExtensionsV1beta1().Deployments(funcObj.ObjectMeta.Namespace).Get(funcObj.ObjectMeta.Name, metav1.GetOptions{})
+		var newDpm *appsv1.Deployment
+		newDpm, err = client.AppsV1().Deployments(funcObj.ObjectMeta.Namespace).Get(funcObj.ObjectMeta.Name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -707,7 +780,7 @@ func EnsureFuncDeployment(client kubernetes.Interface, funcObj *kubelessApi.Func
 			return err
 		}
 		// Use `Patch` to do a rolling update
-		_, err = client.ExtensionsV1beta1().Deployments(funcObj.ObjectMeta.Namespace).Patch(newDpm.Name, types.MergePatchType, data)
+		_, err = client.AppsV1().Deployments(funcObj.ObjectMeta.Namespace).Patch(newDpm.Name, types.MergePatchType, data)
 		if err != nil {
 			return err
 		}
@@ -850,4 +923,115 @@ func DryRunFmt(format string, trigger interface{}) (string, error) {
 	default:
 		return "", fmt.Errorf("Output format needs to be yaml or json")
 	}
+}
+
+// getCompressionType returns the compression type (if any) of the given file by looking at the file extension
+func getCompressionType(filename string) (compressionType string) {
+	if strings.HasSuffix(filename, ".zip") {
+		compressionType = "+zip"
+	}
+
+	extensions := []string{".tar.gz", ".taz", ".tgz", ".tar.bz2", ".tb2", ".tbz", ".tbz2", ".tz2", ".tar.xz"}
+	for _, ext := range extensions {
+		if strings.HasSuffix(filename, ext) {
+			compressionType = "+compressedtar"
+			break
+		}
+	}
+	return
+}
+
+// GetContentType Gets the content type of a given filename
+func GetContentType(filename string) (string, error) {
+	var contentType string
+
+	if strings.Index(filename, "http://") == 0 || strings.Index(filename, "https://") == 0 {
+		contentType = "url" + getCompressionType(strings.Split(filename, "?")[0])
+	} else {
+		fbytes, err := ioutil.ReadFile(filename)
+		if err != nil {
+			return "", err
+		}
+		isText := utf8.ValidString(string(fbytes))
+		if isText {
+			contentType = "text"
+		} else {
+			contentType = "base64"
+		}
+		contentType += getCompressionType(filename)
+	}
+	return contentType, nil
+}
+
+// ParseContent Parses the content of a file as string
+func ParseContent(file, contentType string) (string, string, error) {
+	var checksum, content string
+
+	if strings.Contains(contentType, "url") {
+
+		functionURL, err := url.Parse(file)
+		if err != nil {
+			return "", "", err
+		}
+		resp, err := http.Get(functionURL.String())
+		if err != nil {
+			return "", "", err
+		}
+		defer resp.Body.Close()
+
+		functionBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return "", "", err
+		}
+		content = string(functionBytes)
+		checksum, err = getSha256(functionBytes)
+		if err != nil {
+			return "", "", err
+		}
+
+	} else {
+
+		functionBytes, err := ioutil.ReadFile(file)
+		if err != nil {
+			return "", "", err
+		}
+		if contentType == "text" {
+			content = string(functionBytes)
+		} else {
+			content = base64.StdEncoding.EncodeToString(functionBytes)
+		}
+		checksum, err = getFileSha256(file)
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	return content, checksum, nil
+}
+
+// Get the checksum of a file using sha256
+func getFileSha256(file string) (string, error) {
+	h := sha256.New()
+	ff, err := os.Open(file)
+	if err != nil {
+		return "", err
+	}
+	defer ff.Close()
+	_, err = io.Copy(h, ff)
+	if err != nil {
+		return "", err
+	}
+	checksum := hex.EncodeToString(h.Sum(nil))
+	return "sha256:" + checksum, err
+}
+
+// Get the checksum using sha256
+func getSha256(bytes []byte) (string, error) {
+	h := sha256.New()
+	_, err := h.Write(bytes)
+	if err != nil {
+		return "", err
+	}
+	checksum := hex.EncodeToString(h.Sum(nil))
+	return "sha256:" + checksum, nil
 }

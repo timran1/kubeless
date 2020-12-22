@@ -1,5 +1,8 @@
+GIT_SHA1 ?= master
+BASE_URL := https://raw.githubusercontent.com/kubeless/kubeless/$(GIT_SHA1)
+
 get-python:
-	kubeless function deploy get-python --runtime python2.7 --handler helloget.foo --from-file python/helloget.py
+	kubeless function deploy get-python --runtime python3.7 --handler helloget.foo --from-file python/helloget.py
 
 get-python-verify:
 	kubeless function call get-python |egrep hello.world
@@ -15,14 +18,35 @@ get-python-update-verify:
 	kubeless function call get-python |egrep hello.world.updated
 
 get-python-deps:
-	cd python && zip hellowithdeps.zip hellowithdeps.py  hellowithdepshelper.py && cd ..
-	kubeless function deploy get-python-deps --runtime python2.7 --handler hellowithdeps.foo --from-file python/hellowithdeps.zip --dependencies python/requirements.txt
+	cd python && zip hellowithdeps.zip hellowithdeps.py hellowithdepshelper.py && cd ..
+	kubeless function deploy get-python-deps --runtime python3.7 --handler hellowithdeps.foo --from-file python/hellowithdeps.zip --dependencies python/requirements.txt
+
+get-python-deps-tar-gz:
+	cd python && tar czf hellowithdeps.tar.gz hellowithdeps.py hellowithdepshelper.py && cd ..
+	kubeless function deploy get-python-deps-tar-gz --runtime python3.7 --handler hellowithdeps.foo --from-file python/hellowithdeps.tar.gz --dependencies python/requirements.txt
+
+get-python-deps-tar-bz2:
+	cd python && tar cjf hellowithdeps.tar.bz2 hellowithdeps.py hellowithdepshelper.py && cd ..
+	kubeless function deploy get-python-deps-tar-bz2 --runtime python3.7 --handler hellowithdeps.foo --from-file python/hellowithdeps.tar.bz2 --dependencies python/requirements.txt
+
+get-python-deps-tar-xz:
+	cd python && tar cJf hellowithdeps.tar.xz hellowithdeps.py hellowithdepshelper.py && cd ..
+	kubeless function deploy get-python-deps-tar-xz --runtime python3.7 --handler hellowithdeps.foo --from-file python/hellowithdeps.tar.xz --dependencies python/requirements.txt
 
 get-python-deps-verify:
 	kubeless function call get-python-deps |egrep Google
 
+get-python-deps-tar-gz-verify:
+	kubeless function call get-python-deps-tar-gz |egrep Google
+
+get-python-deps-tar-bz2-verify:
+	kubeless function call get-python-deps-tar-bz2 |egrep Google
+
+get-python-deps-tar-xz-verify:
+	kubeless function call get-python-deps-tar-xz |egrep Google
+
 get-python-custom-port:
-	kubeless function deploy get-python-custom-port --runtime python2.7 --handler helloget.foo --from-file python/helloget.py --port 8081
+	kubeless function deploy get-python-custom-port --runtime python3.7 --handler helloget.foo --from-file python/helloget.py --port 8081
 
 get-python-custom-port-verify:
 	kubectl get svc get-python-custom-port -o yaml | grep 'targetPort: 8081'
@@ -39,32 +63,39 @@ get-python-deps-update-verify:
 	echo "Checking updated deps of $$pod"; \
 	kubectl exec -it $$pod pip freeze | grep -q "twitter=="
 
-get-python-34:
-	kubeless function deploy get-python --runtime python3.4 --handler helloget.foo --from-file python/helloget.py
-
-get-python-34-verify:
-	kubeless function call get-python |egrep hello.world
-
-get-python-36:
-	kubeless function deploy get-python-36 --runtime python3.6 --handler helloget.foo --from-file python/helloget.py
-
-get-python-36-verify:
-	kubeless function call get-python-36 |egrep hello.world
-
 get-python-url-deps:
-	kubeless function deploy get-python-url-deps --runtime python2.7 --handler helloget.foo --from-file https://raw.githubusercontent.com/kubeless/kubeless/v1.0.0-alpha.1/examples/python/hellowithdeps.py --dependencies https://raw.githubusercontent.com/kubeless/kubeless/v1.0.0-alpha.1/examples/python/requirements.txt
+	cd python && tar czf hellowithdeps.tgz hellowithdeps.py hellowithdepshelper.py && cd ..
+	kubeless function deploy get-python-url-deps --runtime python3.7 --handler hellowithdeps.foo --from-file python/hellowithdeps.tgz --dependencies $(BASE_URL)/examples/python/requirements.txt
 
 get-python-url-deps-verify:
 	kubeless function call get-python-url-deps |egrep Google	
 
 get-node-url-zip:
-	kubeless function deploy get-node-url-zip --runtime nodejs6 --handler index.helloGet --from-file https://github.com/kubeless/kubeless/blob/master/examples/nodejs/helloFunctions.zip?raw=true
+	kubeless function deploy get-node-url-zip --runtime nodejs10 --handler index.helloGet --from-file $(BASE_URL)/examples/nodejs/helloFunctions.zip
+
+get-node-url-tar-gz:
+	kubeless function deploy get-node-url-tar-gz --runtime nodejs10 --handler index.helloGet --from-file $(BASE_URL)/examples/nodejs/helloFunctions.tar.gz
+
+get-node-url-tar-bz2:
+	kubeless function deploy get-node-url-tar-bz2 --runtime nodejs10 --handler index.helloGet --from-file $(BASE_URL)/examples/nodejs/helloFunctions.tar.bz2
+
+get-node-url-tar-xz:
+	kubeless function deploy get-node-url-tar-xz --runtime nodejs10 --handler index.helloGet --from-file $(BASE_URL)/examples/nodejs/helloFunctions.tar.xz
 
 get-node-url-zip-verify:
 	kubeless function call get-node-url-zip |egrep hello.world
 
+get-node-url-tar-gz-verify:
+	kubeless function call get-node-url-tar-gz |egrep hello.world
+
+get-node-url-tar-bz2-verify:
+	kubeless function call get-node-url-tar-bz2 |egrep hello.world
+
+get-node-url-tar-xz-verify:
+	kubeless function call get-node-url-tar-xz |egrep hello.world
+
 scheduled-get-python:
-	kubeless function deploy scheduled-get-python --schedule "* * * * *" --runtime python2.7 --handler helloget.foo --from-file python/helloget.py
+	kubeless function deploy scheduled-get-python --schedule "* * * * *" --runtime python3.7 --handler helloget.foo --from-file python/helloget.py
 
 scheduled-get-python-verify:
 	number="1"; \
@@ -85,7 +116,7 @@ scheduled-get-python-verify:
 timeout-python:
 	$(eval TMPDIR := $(shell mktemp -d))
 	printf 'def foo(event, context):\n%4swhile 1: pass\n%4sreturn "hello world"\n' > $(TMPDIR)/hello-loop.py
-	kubeless function deploy timeout-python --runtime python2.7 --handler helloget.foo  --from-file $(TMPDIR)/hello-loop.py --timeout 3
+	kubeless function deploy timeout-python --runtime python3.7 --handler helloget.foo  --from-file $(TMPDIR)/hello-loop.py --timeout 3
 	rm -rf $(TMPDIR)
 
 timeout-python-verify:
@@ -93,20 +124,20 @@ timeout-python-verify:
 	echo $(MSG) | egrep Request.timeout.exceeded
 
 get-nodejs:
-	kubeless function deploy get-nodejs --runtime nodejs6 --handler helloget.foo --from-file nodejs/helloget.js
+	kubeless function deploy get-nodejs --runtime nodejs10 --handler helloget.foo --from-file nodejs/helloget.js
 
 get-nodejs-verify:
 	kubeless function call get-nodejs |egrep hello.world
 
 get-nodejs-custom-port:
-	kubeless function deploy get-nodejs-custom-port --runtime nodejs6 --handler helloget.foo --from-file nodejs/helloget.js --port 8083
+	kubeless function deploy get-nodejs-custom-port --runtime nodejs10 --handler helloget.foo --from-file nodejs/helloget.js --port 8083
 
 get-nodejs-custom-port-verify:
 	kubectl get svc get-nodejs-custom-port -o yaml | grep 'targetPort: 8083'
 	kubeless function call get-nodejs-custom-port |egrep hello.world
 
 get-nodejs-stream:
-	kubeless function deploy get-nodejs-stream --runtime nodejs6 --handler hellostream.foo --from-file nodejs/hellostream.js --dependencies nodejs/package.json
+	kubeless function deploy get-nodejs-stream --runtime nodejs10 --handler hellostream.foo --from-file nodejs/hellostream.js --dependencies nodejs/package.json
 
 get-nodejs-stream-verify:
 	kubeless function call get-nodejs-stream |egrep hello.world
@@ -114,7 +145,7 @@ get-nodejs-stream-verify:
 timeout-nodejs:
 	$(eval TMPDIR := $(shell mktemp -d))
 	printf 'module.exports = { foo: function (event, context) { while(true) {} } }\n' > $(TMPDIR)/hello-loop.js
-	kubeless function deploy timeout-nodejs --runtime nodejs6 --handler helloget.foo  --from-file $(TMPDIR)/hello-loop.js --timeout 4
+	kubeless function deploy timeout-nodejs --runtime nodejs10 --handler helloget.foo  --from-file $(TMPDIR)/hello-loop.js --timeout 4
 	rm -rf $(TMPDIR)
 
 timeout-nodejs-verify:
@@ -122,27 +153,27 @@ timeout-nodejs-verify:
 	echo $(MSG) | egrep Request.timeout.exceeded
 
 get-nodejs-deps:
-	kubeless function deploy get-nodejs-deps --runtime nodejs6 --handler helloget.handler --from-file nodejs/hellowithdeps.js --dependencies nodejs/package.json
+	kubeless function deploy get-nodejs-deps --runtime nodejs10 --handler helloget.handler --from-file nodejs/hellowithdeps.js --dependencies nodejs/package.json
 
 get-nodejs-deps-verify:
 	kubeless function call get-nodejs-deps --data '{"hello": "world"}' | grep -q 'hello.*world.*date.*UTC'
 
 get-nodejs-multi:
 	cd nodejs; zip helloFunctions.zip *js
-	kubeless function deploy get-nodejs-multi --runtime nodejs6 --handler index.helloGet --from-file nodejs/helloFunctions.zip
+	kubeless function deploy get-nodejs-multi --runtime nodejs10 --handler index.helloGet --from-file nodejs/helloFunctions.zip
 	rm nodejs/helloFunctions.zip
 
 get-nodejs-multi-verify:
 	kubeless function call get-nodejs-multi |egrep hello.world
 
 get-go:
-	kubeless function deploy get-go --runtime go1.10 --handler handler.Foo --from-file golang/helloget.go
+	kubeless function deploy get-go --runtime go1.14 --handler handler.Foo --from-file golang/helloget.go
 
 get-go-verify:
 	kubeless function call get-go |egrep Hello.world
 
 get-go-custom-port:
-	kubeless function deploy get-go-custom-port --runtime go1.10 --handler helloget.Foo --from-file golang/helloget.go --port 8083
+	kubeless function deploy get-go-custom-port --runtime go1.14 --handler helloget.Foo --from-file golang/helloget.go --port 8083
 
 get-go-custom-port-verify:
 	kubectl get svc get-go-custom-port -o yaml | grep 'targetPort: 8083'
@@ -151,7 +182,7 @@ get-go-custom-port-verify:
 timeout-go:
 	$(eval TMPDIR := $(shell mktemp -d))
 	printf 'package kubeless\nimport "github.com/kubeless/kubeless/pkg/functions"\nfunc Foo(event functions.Event, context functions.Context) (string, error) {\nfor{\n}\nreturn "", nil\n}' > $(TMPDIR)/hello-loop.js
-	kubeless function deploy timeout-go --runtime go1.10 --handler helloget.Foo  --from-file $(TMPDIR)/hello-loop.js --timeout 4
+	kubeless function deploy timeout-go --runtime go1.14 --handler helloget.Foo  --from-file $(TMPDIR)/hello-loop.js --timeout 4
 	rm -rf $(TMPDIR)
 
 timeout-go-verify:
@@ -159,14 +190,14 @@ timeout-go-verify:
 	echo $(MSG) | egrep Request.timeout.exceeded
 
 get-go-deps:
-	kubeless function deploy get-go-deps --runtime go1.10 --handler helloget.Hello --from-file golang/hellowithdeps.go --dependencies golang/Gopkg.toml
+	kubeless function deploy get-go-deps --runtime go1.14 --handler helloget.Hello --from-file golang/hellowithdeps.go --dependencies golang/go.mod
 
 get-go-deps-verify:
 	kubeless function call get-go-deps --data '{"hello": "world"}'
 	kubectl logs --tail=1000 -l function=get-go-deps | grep -q 'level=info msg=.*hello.*world'
 
 post-go:
-	kubeless function deploy post-go --runtime go1.10 --handler hellowithdata.Handler --from-file golang/hellowithdata.go
+	kubeless function deploy post-go --runtime go1.14 --handler hellowithdata.Handler --from-file golang/hellowithdata.go
 
 post-go-verify:
 	kubeless function call post-go --data '{"it-s": "alive"}'| egrep "it.*alive"
@@ -178,16 +209,19 @@ post-go-verify:
 	echo $$logs | grep -q "cli.kubeless.io"
 
 get-python-metadata:
-	kubeless function deploy get-python-metadata --runtime python2.7 --handler helloget.foo --from-file python/helloget.py --env foo:bar,bar=foo --memory 128Mi --label foo:bar,bar=foo,foobar
+	kubeless function deploy get-python-metadata --runtime python3.7 --handler helloget.foo --from-file python/helloget.py --env foo:bar,bar=foo --memory 128Mi --label foo:bar,bar=foo,foobar
 
 get-python-metadata-verify:
 	kubeless function call get-python-metadata |egrep hello.world
-	kubectl get po -o jsonpath='{.items[0].spec.containers[0].env}' -l function=get-python-metadata | grep "name:foo value:bar"
-	kubectl get po -o jsonpath='{.items[0].spec.containers[0].env}' -l function=get-python-metadata | grep "name:bar value:foo"
+	kubectl get po -o jsonpath='{.items[0].spec.containers[0].env}' -l function=get-python-metadata | grep '"name":"foo","value":"bar"'
+	kubectl get po -o jsonpath='{.items[0].spec.containers[0].env}' -l function=get-python-metadata | grep '"name":"bar","value":"foo"'
+	kubectl get po -o jsonpath='{.items[0].metadata.labels}' -l function=get-python-metadata | grep '"foo":"bar"'
+	kubectl get po -o jsonpath='{.items[0].metadata.labels}' -l function=get-python-metadata | grep '"bar":"foo"'
+	kubectl get po -o jsonpath='{.items[0].metadata.labels}' -l function=get-python-metadata | grep '"foobar":""'
 
 get-python-secrets:
 	kubectl create secret generic test-secret --from-literal=key=MY_KEY || true
-	kubeless function deploy get-python-secrets --runtime python2.7 --handler helloget.foo --from-file python/helloget.py --secrets test-secret
+	kubeless function deploy get-python-secrets --runtime python3.7 --handler helloget.foo --from-file python/helloget.py --secrets test-secret
 
 get-python-secrets-verify:
 	$(eval pod := $(shell kubectl get pod -l function=get-python-secrets -o go-template -o custom-columns=:metadata.name --no-headers=true))
@@ -298,7 +332,7 @@ custom-get-python-update-verify:
 get: get-python get-nodejs get-python-metadata get-ruby get-ruby-deps get-python-custom-port
 
 post-python:
-	kubeless function deploy post-python --runtime python2.7 --handler hellowithdata.handler --from-file python/hellowithdata.py
+	kubeless function deploy post-python --runtime python3.7 --handler hellowithdata.handler --from-file python/hellowithdata.py
 
 post-python-verify:
 	kubeless function call post-python --data '{"it-s": "alive"}'|egrep "it.*alive"
@@ -311,14 +345,14 @@ post-python-verify:
 	echo $$logs | grep -q "event-id.*"
 
 post-python-custom-port:
-	kubeless function deploy post-python-custom-port --runtime python2.7 --handler hellowithdata.handler --from-file python/hellowithdata.py --port 8081
+	kubeless function deploy post-python-custom-port --runtime python3.7 --handler hellowithdata.handler --from-file python/hellowithdata.py --port 8081
 
 post-python-custom-port-verify:
 	kubectl get svc post-python-custom-port -o yaml | grep 'targetPort: 8081'
 	kubeless function call post-python-custom-port --data '{"it-s": "alive"}'|egrep "it.*alive"
 
 post-nodejs:
-	kubeless function deploy post-nodejs --runtime nodejs6 --handler hellowithdata.handler --from-file nodejs/hellowithdata.js
+	kubeless function deploy post-nodejs --runtime nodejs10 --handler hellowithdata.handler --from-file nodejs/hellowithdata.js
 
 post-nodejs-verify:
 	kubeless function call post-nodejs --data '{"it-s": "alive"}'|egrep "it.*alive"
@@ -353,7 +387,7 @@ post: post-python post-nodejs post-ruby post-python-custom-port
 
 pubsub-python:
 	kubeless topic create s3-python || true
-	kubeless function deploy pubsub-python  --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py
+	kubeless function deploy pubsub-python  --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py
 	kubeless trigger kafka create pubsub-python --function-selector created-by=kubeless,function=pubsub-python --trigger-topic s3-python
 
 # Generate a random string to inject into s3 topic,
@@ -383,7 +417,7 @@ pubsub-python-verify:
 	echo $$logs | grep -q "event-id.*"
 
 python-nats:
-	kubeless function deploy python-nats --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py
+	kubeless function deploy python-nats --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py
 	kubeless trigger nats create python-nats --function-selector created-by=kubeless,function=python-nats --trigger-topic test
 
 python-nats-verify:
@@ -413,7 +447,7 @@ python-nats-verify:
 	echo $$logs | grep -q "event-id.*"
 
 python-kinesis:
-	kubeless function deploy python-kinesis --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py
+	kubeless function deploy python-kinesis --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py
 	$(eval NODEPORT := $(shell kubectl get svc kinesis -o jsonpath="{.spec.ports[0].nodePort}"))
 	$(eval MINIKUBE_IP := $(shell minikube ip))
 	kubectl create secret generic ec2 --from-literal=aws_access_key_id=kinesalite --from-literal=aws_secret_access_key=kinesalite
@@ -447,7 +481,7 @@ python-kinesis-verify:
 	echo $$logs | grep -q "event-id.*"
 
 python-kinesis-multi-record:
-	kubeless function deploy python-kinesis-multi-record --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py
+	kubeless function deploy python-kinesis-multi-record --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py
 	$(eval NODEPORT := $(shell kubectl get svc kinesis -o jsonpath="{.spec.ports[0].nodePort}"))
 	$(eval MINIKUBE_IP := $(shell minikube ip))
 	kubeless trigger kinesis create kinesis-trigger-mr --function-name python-kinesis-multi-record --aws-region kinesalite --shard-id shardId-000000000000 --stream kubeless-stream --secret ec2 --endpoint http://$(MINIKUBE_IP):$(NODEPORT)
@@ -481,13 +515,13 @@ python-kinesis-multi-record-verify:
 	echo $$logs | grep -q "event-id.*"
 
 nats-python-func1-topic-test:
-	kubeless function deploy nats-python-func1-topic-test --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py  --label topic=nats-topic-test
+	kubeless function deploy nats-python-func1-topic-test --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py  --label topic=nats-topic-test
 
 nats-python-func2-topic-test:
-	kubeless function deploy nats-python-func2-topic-test --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py  --label topic=nats-topic-test
+	kubeless function deploy nats-python-func2-topic-test --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py  --label topic=nats-topic-test
 
 nats-python-func-multi-topic:
-	kubeless function deploy nats-python-func-multi-topic --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py  --label func=nats-python-func-multi-topic
+	kubeless function deploy nats-python-func-multi-topic --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py  --label func=nats-python-func-multi-topic
 
 nats-python-trigger-topic-test:
 	kubeless trigger nats create nats-python-trigger-topic-test --function-selector created-by=kubeless,topic=nats-topic-test --trigger-topic topic-test
@@ -600,7 +634,7 @@ nats-python-func-multi-topic-verify:
 
 kafka-python-func1-topic-s3-python:
 	kubeless topic create s3-python || true
-	kubeless function deploy kafka-python-func1-topic-s3-python --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py --label topic=s3-python
+	kubeless function deploy kafka-python-func1-topic-s3-python --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py --label topic=s3-python
 
 kafka-python-func1-topic-s3-python-verify:
 	$(eval DATA := $(shell mktemp -u -t XXXXXXXX))
@@ -622,7 +656,7 @@ kafka-python-func1-topic-s3-python-verify:
 
 kafka-python-func2-topic-s3-python:
 	kubeless topic create s3-python || true
-	kubeless function deploy kafka-python-func2-topic-s3-python --runtime python2.7 --handler pubsub.handler --from-file python/hellowithdata.py --label topic=s3-python
+	kubeless function deploy kafka-python-func2-topic-s3-python --runtime python3.7 --handler pubsub.handler --from-file python/hellowithdata.py --label topic=s3-python
 
 kafka-python-func2-topic-s3-python-verify:
 	$(eval DATA := $(shell mktemp -u -t XXXXXXXX))
@@ -693,7 +727,7 @@ pubsub-python36-verify:
 
 pubsub-nodejs:
 	kubeless topic create s3-nodejs || true
-	kubeless function deploy pubsub-nodejs --runtime nodejs6 --handler pubsub-nodejs.handler --from-file nodejs/hellowithdata.js
+	kubeless function deploy pubsub-nodejs --runtime nodejs10 --handler pubsub-nodejs.handler --from-file nodejs/hellowithdata.js
 	kubeless trigger kafka create pubsub-nodejs --function-selector created-by=kubeless,function=pubsub-nodejs --trigger-topic s3-nodejs
 
 pubsub-nodejs-verify:
@@ -761,7 +795,7 @@ pubsub-ruby-verify:
 
 pubsub-go:
 	kubeless topic create s3-go || true
-	kubeless function deploy pubsub-go --runtime go1.10 --handler pubsub-go.Handler --from-file golang/hellowithdata.go
+	kubeless function deploy pubsub-go --runtime go1.14 --handler pubsub-go.Handler --from-file golang/hellowithdata.go
 	kubeless trigger kafka create pubsub-go --function-selector created-by=kubeless,function=pubsub-go --trigger-topic s3-go
 
 pubsub-go-verify:

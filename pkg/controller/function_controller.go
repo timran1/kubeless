@@ -24,9 +24,9 @@ import (
 
 	monitoringv1alpha1 "github.com/coreos/prometheus-operator/pkg/client/monitoring/v1alpha1"
 	"github.com/sirupsen/logrus"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/api/autoscaling/v2beta1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/api/extensions/v1beta1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -300,9 +300,9 @@ func (c *FunctionController) ensureK8sResources(funcObj *kubelessApi.Function) e
 	}
 	funcObj.ObjectMeta.Labels["function"] = funcObj.ObjectMeta.Name
 
-	deployment := v1beta1.Deployment{}
+	deployment := appsv1.Deployment{}
 	if deploymentConfigData, ok := c.config.Data["deployment"]; ok {
-		err := yaml.Unmarshal([]byte(deploymentConfigData), &deployment)
+		err := yaml.UnmarshalStrict([]byte(deploymentConfigData), &deployment, yaml.DisallowUnknownFields)
 		if err != nil {
 			logrus.Errorf("Error parsing Deployment data in ConfigMap kubeless-function-deployment-config: %v", err)
 			return err
@@ -367,6 +367,9 @@ func (c *FunctionController) ensureK8sResources(funcObj *kubelessApi.Function) e
 			}
 		}
 		err = utils.CreateAutoscale(c.clientset, funcObj.Spec.HorizontalPodAutoscaler)
+		if err != nil && k8sErrors.IsAlreadyExists(err) {
+			err = utils.UpdateAutoscale(c.clientset, funcObj.Spec.HorizontalPodAutoscaler)
+		}
 		if err != nil {
 			return err
 		}

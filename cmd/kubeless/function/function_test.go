@@ -17,7 +17,11 @@ limitations under the License.
 package function
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -28,9 +32,9 @@ import (
 	"testing"
 
 	kubelessApi "github.com/kubeless/kubeless/pkg/apis/kubeless/v1beta1"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/api/autoscaling/v2beta1"
-	"k8s.io/api/core/v1"
-	"k8s.io/api/extensions/v1beta1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -89,6 +93,21 @@ func TestParseEnv(t *testing.T) {
 	}
 }
 
+func TestParseNodeSelectors(t *testing.T) {
+	nodeSelectors := []string{
+		"foo=bar",
+		"baz:qux",
+	}
+	expected := map[string]string{
+		"foo": "bar",
+		"baz": "qux",
+	}
+	actual := parseNodeSelectors(nodeSelectors)
+	if eq := reflect.DeepEqual(expected, actual); !eq {
+		t.Errorf("Expect %v got %v", expected, actual)
+	}
+}
+
 func TestGetFunctionDescription(t *testing.T) {
 	// It should parse the given values
 	file, err := ioutil.TempFile("", "test")
@@ -102,7 +121,7 @@ func TestGetFunctionDescription(t *testing.T) {
 	file.Close()
 	defer os.Remove(file.Name()) // clean up
 
-	result, err := getFunctionDescription("test", "default", "file.handler", file.Name(), "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, kubelessApi.Function{})
+	result, err := getFunctionDescription("test", "default", "file.handler", file.Name(), "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", "serviceAccount", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, []string{"foo1=bar1", "baz1:qux1"}, kubelessApi.Function{})
 
 	if err != nil {
 		t.Error(err)
@@ -129,10 +148,11 @@ func TestGetFunctionDescription(t *testing.T) {
 			FunctionContentType: "text",
 			Deps:                "dependencies",
 			Timeout:             "10",
-			Deployment: v1beta1.Deployment{
-				Spec: v1beta1.DeploymentSpec{
+			Deployment: appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
 					Template: v1.PodTemplateSpec{
 						Spec: v1.PodSpec{
+							ServiceAccountName: "serviceAccount",
 							Containers: []v1.Container{
 								{
 									Env: []v1.EnvVar{{
@@ -169,6 +189,10 @@ func TestGetFunctionDescription(t *testing.T) {
 									},
 								},
 							},
+							NodeSelector: map[string]string{
+								"foo1": "bar1",
+								"baz1": "qux1",
+							},
 						},
 					},
 				},
@@ -189,7 +213,7 @@ func TestGetFunctionDescription(t *testing.T) {
 	}
 
 	// It should take the default values
-	result2, err := getFunctionDescription("test", "default", "", "", "", "", "", "", "", "", "Always", 8080, 0, false, []string{}, []string{}, []string{}, expectedFunction)
+	result2, err := getFunctionDescription("test", "default", "", "", "", "", "", "", "", "", "Always", "", 8080, 0, false, []string{}, []string{}, []string{}, []string{}, expectedFunction)
 
 	if err != nil {
 		t.Error(err)
@@ -210,7 +234,7 @@ func TestGetFunctionDescription(t *testing.T) {
 	file.Close()
 	defer os.Remove(file.Name()) // clean up
 
-	result3, err := getFunctionDescription("test", "default", "file.handler2", file.Name(), "dependencies2", "runtime2", "test-image2", "256Mi", "100m", "20", "Always", 8080, 0, false, []string{"TEST=2"}, []string{"test=2"}, []string{"secret2"}, expectedFunction)
+	result3, err := getFunctionDescription("test", "default", "file.handler2", file.Name(), "dependencies2", "runtime2", "test-image2", "256Mi", "100m", "20", "Always", "NewServiceAccount", 8080, 0, false, []string{"TEST=2"}, []string{"test=2"}, []string{"secret2"}, []string{"foo2=bar2", "baz2:qux2"}, expectedFunction)
 
 	if err != nil {
 		t.Error(err)
@@ -237,10 +261,11 @@ func TestGetFunctionDescription(t *testing.T) {
 			Checksum:            "sha256:1958eb96d7d3cadedd0f327f09322eb7db296afb282ed91aa66cb4ab0dcc3c9f",
 			Deps:                "dependencies2",
 			Timeout:             "20",
-			Deployment: v1beta1.Deployment{
-				Spec: v1beta1.DeploymentSpec{
+			Deployment: appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
 					Template: v1.PodTemplateSpec{
 						Spec: v1.PodSpec{
+							ServiceAccountName: "NewServiceAccount",
 							Containers: []v1.Container{
 								{
 									Env: []v1.EnvVar{{
@@ -287,6 +312,10 @@ func TestGetFunctionDescription(t *testing.T) {
 									},
 								},
 							},
+							NodeSelector: map[string]string{
+								"foo2": "bar2",
+								"baz2": "qux2",
+							},
 						},
 					},
 				},
@@ -306,26 +335,38 @@ func TestGetFunctionDescription(t *testing.T) {
 		t.Errorf("Unexpected result. Expecting:\n %+v\n Received %+v\n", newFunction, *result3)
 	}
 
-	// It should detect that it is a Zip file
+	// It should detect that it is a Zip file or a compressed tar file
 	file, err = os.Open(file.Name())
 	if err != nil {
 		t.Error(err)
 	}
-	newfile, err := os.Create(file.Name() + ".zip")
+
+	zipFile, err := os.Create(file.Name() + ".zip")
 	if err != nil {
 		t.Error(err)
 	}
-	defer os.Remove(newfile.Name()) // clean up
-	zipW := zip.NewWriter(newfile)
+	defer os.Remove(zipFile.Name()) // clean up
+
+	tarGzFile, err := os.Create(file.Name() + ".tar.gz")
+	if err != nil {
+		t.Error(err)
+	}
+	defer os.Remove(tarGzFile.Name()) // clean up
+
+	zipW := zip.NewWriter(zipFile)
+	gzipW := gzip.NewWriter(tarGzFile)
+	tarW := tar.NewWriter(gzipW)
+
 	info, err := file.Stat()
 	if err != nil {
 		t.Error(err)
 	}
-	header, err := zip.FileInfoHeader(info)
+
+	zipHeader, err := zip.FileInfoHeader(info)
 	if err != nil {
 		t.Error(err)
 	}
-	writer, err := zipW.CreateHeader(header)
+	writer, err := zipW.CreateHeader(zipHeader)
 	if err != nil {
 		t.Error(err)
 	}
@@ -333,19 +374,46 @@ func TestGetFunctionDescription(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	file.Close()
-	zipW.Close()
 
-	result4, err := getFunctionDescription("test", "default", "file.handler", newfile.Name(), "dependencies", "runtime", "", "", "", "", "Always", 8080, 0, false, []string{}, []string{}, []string{}, expectedFunction)
+	tarHeader, err := tar.FileInfoHeader(info, info.Name())
 	if err != nil {
 		t.Error(err)
 	}
-	if result4.Spec.FunctionContentType != "base64+zip" {
-		t.Errorf("Should return base64+zip, received %s", result4.Spec.FunctionContentType)
+	tarHeader.Name = file.Name()
+	err = tarW.WriteHeader(tarHeader)
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = io.Copy(writer, file)
+	if err != nil {
+		t.Error(err)
+	}
+
+	file.Close()
+	zipW.Close()
+	zipFile.Close()
+	tarW.Close()
+	gzipW.Close()
+	tarGzFile.Close()
+
+	result4A, err := getFunctionDescription("test", "default", "file.handler", zipFile.Name(), "dependencies", "runtime", "", "", "", "", "Always", "", 8080, 0, false, []string{}, []string{}, []string{}, []string{}, expectedFunction)
+	if err != nil {
+		t.Error(err)
+	}
+	if result4A.Spec.FunctionContentType != "base64+zip" {
+		t.Errorf("Should return base64+zip, received %s", result4A.Spec.FunctionContentType)
+	}
+
+	result4B, err := getFunctionDescription("test", "default", "file.handler", tarGzFile.Name(), "dependencies", "runtime", "", "", "", "", "Always", "", 8080, 0, false, []string{}, []string{}, []string{}, []string{}, expectedFunction)
+	if err != nil {
+		t.Error(err)
+	}
+	if result4B.Spec.FunctionContentType != "base64+compressedtar" {
+		t.Errorf("Should return base64+compressedtar, received %s", result4B.Spec.FunctionContentType)
 	}
 
 	// It should maintain previous HPA definition
-	result5, err := getFunctionDescription("test", "default", "file.handler", file.Name(), "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{}, kubelessApi.Function{
+	result5, err := getFunctionDescription("test", "default", "file.handler", file.Name(), "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", "serviceAccount", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{}, []string{}, kubelessApi.Function{
 
 		Spec: kubelessApi.FunctionSpec{
 			HorizontalPodAutoscaler: v2beta1.HorizontalPodAutoscaler{
@@ -360,7 +428,7 @@ func TestGetFunctionDescription(t *testing.T) {
 	}
 
 	// It should set the Port, ServicePort and headless service properly
-	result6, err := getFunctionDescription("test", "default", "file.handler", file.Name(), "dependencies", "runtime", "test-image", "128Mi", "", "", "Always", 9091, 9092, true, []string{}, []string{}, []string{}, kubelessApi.Function{})
+	result6, err := getFunctionDescription("test", "default", "file.handler", file.Name(), "dependencies", "runtime", "test-image", "128Mi", "", "", "Always", "serviceAccount", 9091, 9092, true, []string{}, []string{}, []string{}, []string{}, kubelessApi.Function{})
 	expectedPort := v1.ServicePort{
 		Name:       "http-function-port",
 		Port:       9092,
@@ -401,10 +469,11 @@ func TestGetFunctionDescription(t *testing.T) {
 			FunctionContentType: "url",
 			Deps:                "dependencies",
 			Timeout:             "10",
-			Deployment: v1beta1.Deployment{
-				Spec: v1beta1.DeploymentSpec{
+			Deployment: appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
 					Template: v1.PodTemplateSpec{
 						Spec: v1.PodSpec{
+							ServiceAccountName: "serviceAccount",
 							Containers: []v1.Container{
 								{
 									Env: []v1.EnvVar{{
@@ -441,6 +510,10 @@ func TestGetFunctionDescription(t *testing.T) {
 									},
 								},
 							},
+							NodeSelector: map[string]string{
+								"foo3": "bar3",
+								"baz3": "qux3",
+							},
 						},
 					},
 				},
@@ -457,7 +530,7 @@ func TestGetFunctionDescription(t *testing.T) {
 		},
 	}
 
-	result7, err := getFunctionDescription("test", "default", "file.handler", ts.URL, "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, kubelessApi.Function{})
+	result7, err := getFunctionDescription("test", "default", "file.handler", ts.URL, "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", "serviceAccount", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, []string{"foo3=bar3", "baz3:qux3"}, kubelessApi.Function{})
 
 	if err != nil {
 		t.Error(err)
@@ -466,31 +539,65 @@ func TestGetFunctionDescription(t *testing.T) {
 	if !reflect.DeepEqual(expectedURLFunction, *result7) {
 		t.Errorf("Unexpected result. Expecting:\n %+v\nReceived:\n %+v", expectedURLFunction, *result7)
 	}
-	// end test
 
-	// it should handle zip files from a URL and detect url+zip encoding
-	zipBytes, err := ioutil.ReadFile(newfile.Name())
+	// It should handle zip files and compressed tar files from a URL and detect url+zip and url+compressedtar encoding respectively
+	zipBytes, err := ioutil.ReadFile(zipFile.Name())
 	if err != nil {
 		t.Error(err)
 	}
 
-	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts2A := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(zipBytes)
 	}))
-	defer ts2.Close()
+	defer ts2A.Close()
 
 	expectedURLFunction.Spec.FunctionContentType = "url+zip"
-	expectedURLFunction.Spec.Function = ts2.URL + "/test.zip"
-	result8, err := getFunctionDescription("test", "default", "file.handler", ts2.URL+"/test.zip", "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, kubelessApi.Function{})
+	expectedURLFunction.Spec.Function = ts2A.URL + "/test.zip"
+	expectedURLFunction.Spec.Checksum, err = getSha256(zipBytes)
 	if err != nil {
 		t.Error(err)
 	}
-	if result8.Spec.FunctionContentType != "url+zip" {
-		t.Errorf("Unexpected result. Expecting:\n %+v\nReceived:\n %+v", expectedURLFunction, *result8)
+
+	result8A, err := getFunctionDescription("test", "default", "file.handler", ts2A.URL+"/test.zip", "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", "serviceAccount", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, []string{"foo3=bar3", "baz3:qux3"}, kubelessApi.Function{})
+	if err != nil {
+		t.Error(err)
 	}
-	if result8.Spec.Function != ts2.URL+"/test.zip" {
-		t.Errorf("Unexpected result. Expecting:\n %+v\nReceived:\n %+v", expectedURLFunction, *result8)
+	if !reflect.DeepEqual(expectedURLFunction, *result8A) {
+		t.Errorf("Unexpected result. Expecting:\n %+v\nReceived:\n %+v", expectedURLFunction, *result8A)
+	}
+
+	tarGzBytes, err := ioutil.ReadFile(tarGzFile.Name())
+	if err != nil {
+		t.Error(err)
+	}
+	ts2B := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tarGzBytes)
+	}))
+	defer ts2B.Close()
+
+	expectedURLFunction.Spec.FunctionContentType = "url+compressedtar"
+	expectedURLFunction.Spec.Function = ts2B.URL + "/test.tar.gz"
+	expectedURLFunction.Spec.Checksum, err = getSha256(tarGzBytes)
+	if err != nil {
+		t.Error(err)
+	}
+
+	result8B, err := getFunctionDescription("test", "default", "file.handler", ts2B.URL+"/test.tar.gz", "dependencies", "runtime", "test-image", "128Mi", "", "10", "Always", "serviceAccount", 8080, 0, false, []string{"TEST=1"}, []string{"test=1"}, []string{"secretName"}, []string{"foo3=bar3", "baz3:qux3"}, kubelessApi.Function{})
+	if err != nil {
+		t.Error(err)
+	}
+	if !reflect.DeepEqual(expectedURLFunction, *result8B) {
+		t.Errorf("Unexpected result. Expecting:\n %+v\nReceived:\n %+v", expectedURLFunction, *result8B)
 	}
 	// end test
+}
 
+func getSha256(bytes []byte) (string, error) {
+	h := sha256.New()
+	_, err := h.Write(bytes)
+	if err != nil {
+		return "", err
+	}
+	checksum := hex.EncodeToString(h.Sum(nil))
+	return "sha256:" + checksum, nil
 }
